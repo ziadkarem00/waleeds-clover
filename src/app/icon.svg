@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect width="64" height="64" rx="14" fill="#09090B" />
+  <rect x="1.5" y="1.5" width="61" height="61" rx="12.5" stroke="#27272A" stroke-width="2" />
+  <!-- 5th Top Leaf (Crimson Anti-Magic) -->
+  <path d="M32 30 C27.5 21 27 11.5 32 9.5 C37 11.5 36.5 21 32 30 Z" fill="#DC2626" />
+  <!-- Upper Right Leaf -->
+  <path d="M33.2 31.2 C40 25 49.5 22 52 27.2 C52 32.5 42.5 34.2 33.2 31.2 Z" fill="#E4E4E7" />
+  <!-- Upper Left Leaf -->
+  <path d="M30.8 31.2 C24 25 14.5 22 12 27.2 C12 32.5 21.5 34.2 30.8 31.2 Z" fill="#E4E4E7" />
+  <!-- Lower Right Leaf -->
+  <path d="M33 33 C41.5 36 48.5 42.5 45 48 C39.5 50 35 41.5 33 33 Z" fill="#E4E4E7" />
+  <!-- Lower Left Leaf -->
+  <path d="M31 33 C22.5 36 15.5 42.5 19 48 C24.5 50 29 41.5 31 33 Z" fill="#E4E4E7" />
+  <!-- Stem -->
+  <path d="M32 34 C32 43 31 49.5 28.5 55" stroke="#A1A1AA" stroke-width="2.4" stroke-linecap="round" />
+  <!-- Center Seal -->
+  <circle cx="32" cy="32" r="3" fill="#09090B" stroke="#E4E4E7" stroke-width="1.5" />
+</svg>
