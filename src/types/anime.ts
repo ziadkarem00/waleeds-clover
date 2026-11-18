@@ -27,21 +27,20 @@ export interface Episode {
   arcName: string;
 }
 
-export type ServerId =
-  | "vidplus"
-  | "vidlink"
-  | "animeembed-ani"
-  | "animeembed-mal"
-  | "animeembed-dub";
+export type ServerId = "animeembed-ani" | "animeembed-mal" | "animeembed-dub";
 
-export type CaptionLanguage = "en" | "ar";
+export type CaptionMode = "en" | "ar" | "off";
+
+export interface SubtitleCue {
+  start: number;
+  end: number;
+  text: string;
+}
 
 export interface EmbedServer {
   id: ServerId;
   name: string;
   shortLabel: string;
-  supportsArabicCC: boolean;
-  supportsSandbox: boolean;
   buildUrl: (episodeNumber: number) => string;
 }
 
@@ -56,8 +55,7 @@ export interface UserWatchState {
   watchedEpisodes: number[];
   favoriteEpisodes: number[];
   preferredServer: ServerId;
-  captionLanguage: CaptionLanguage;
-  adShieldEnabled: boolean;
+  captionMode: CaptionMode;
 }
 
 export interface EpisodeCachePayload {

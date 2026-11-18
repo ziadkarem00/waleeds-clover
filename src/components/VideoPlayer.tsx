@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -9,19 +9,31 @@ import {
   Lightbulb,
   LightbulbOff,
   Loader2,
-  Shield,
+  Minus,
+  Plus,
   Subtitles,
+  Upload,
 } from "lucide-react";
 import { TOTAL_EPISODES } from "@/lib/arcs";
 import { EMBED_SERVERS, getServerById } from "@/lib/servers";
-import type { CaptionLanguage, Episode, ServerId } from "@/types/anime";
+import {
+  decodeSubtitleBuffer,
+  findActiveCue,
+  parseSrtOrVtt,
+} from "@/lib/subtitles";
+import type {
+  CaptionMode,
+  Episode,
+  ServerId,
+  SubtitleCue,
+} from "@/types/anime";
 
 interface VideoPlayerProps {
   episode: Episode;
   activeServer: ServerId;
   onSelectServer: (server: ServerId) => void;
-  captionLanguage: CaptionLanguage;
-  onSelectCaptionLanguage: (lang: CaptionLanguage) => void;
+  captionMode: CaptionMode;
+  onSelectCaptionMode: (mode: CaptionMode) => void;
   isWatched: boolean;
   isFavorite: boolean;
   onToggleWatched: (episodeNumber: number) => void;
@@ -29,16 +41,65 @@ interface VideoPlayerProps {
   onSelectEpisode: (episodeNumber: number) => void;
   lightsOff: boolean;
   onToggleLightsOff: () => void;
-  adShieldEnabled: boolean;
-  onToggleAdShield: () => void;
+}
+
+function extractTimeFromMessage(raw: unknown): {
+  time?: number;
+  playing?: boolean;
+} {
+  let data: unknown = raw;
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return {};
+    }
+  }
+  if (!data || typeof data !== "object") return {};
+
+  const obj = data as Record<string, unknown>;
+  const nested =
+    (obj.data && typeof obj.data === "object"
+      ? (obj.data as Record<string, unknown>)
+      : null) ??
+    (obj.payload && typeof obj.payload === "object"
+      ? (obj.payload as Record<string, unknown>)
+      : null);
+
+  const eventName = String(
+    obj.event ?? obj.type ?? nested?.event ?? ""
+  ).toLowerCase();
+
+  let playing: boolean | undefined;
+  if (eventName === "play" || eventName === "playing") playing = true;
+  if (eventName === "pause" || eventName === "paused" || eventName === "ended") {
+    playing = false;
+  }
+
+  const candidateValues = [
+    obj.currentTime,
+    obj.time,
+    obj.position,
+    nested?.currentTime,
+    nested?.time,
+    nested?.position,
+  ];
+
+  for (const val of candidateValues) {
+    if (typeof val === "number" && Number.isFinite(val) && val >= 0) {
+      return { time: val, playing };
+    }
+  }
+
+  return { playing };
 }
 
 export function VideoPlayer({
   episode,
   activeServer,
   onSelectServer,
-  captionLanguage,
-  onSelectCaptionLanguage,
+  captionMode,
+  onSelectCaptionMode,
   isWatched,
   isFavorite,
   onToggleWatched,
@@ -46,17 +107,124 @@ export function VideoPlayer({
   onSelectEpisode,
   lightsOff,
   onToggleLightsOff,
-  adShieldEnabled,
-  onToggleAdShield,
 }: VideoPlayerProps) {
   const [iframeLoading, setIframeLoading] = useState(true);
+
+  // Synced subtitle overlay state (used for Arabic CC or uploaded .srt/.vtt)
+  const [cues, setCues] = useState<SubtitleCue[]>([]);
+  const [subStatus, setSubStatus] = useState<
+    "idle" | "loading" | "ready" | "missing"
+  >("idle");
+  const [customSubName, setCustomSubName] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isSyncedWithPlayer, setIsSyncedWithPlayer] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [timeOffset, setTimeOffset] = useState(0);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const serverConfig = getServerById(activeServer);
   const embedUrl = serverConfig.buildUrl(episode.number);
 
+  // Reset loading & player clock on episode or server change
   useEffect(() => {
     setIframeLoading(true);
-  }, [embedUrl, adShieldEnabled]);
+    setCurrentTime(0);
+    setIsSyncedWithPlayer(false);
+    setIsPlaying(false);
+    setTimeOffset(0);
+    setCustomSubName(null);
+  }, [embedUrl]);
+
+  // Listen for AnimeEmbed PostMessage progress / play / pause events
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (!event.origin.includes("animeembed.com")) return;
+      const parsed = extractTimeFromMessage(event.data);
+      if (typeof parsed.time === "number") {
+        setCurrentTime(parsed.time);
+        setIsSyncedWithPlayer(true);
+      }
+      if (typeof parsed.playing === "boolean") {
+        setIsPlaying(parsed.playing);
+      }
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  // Smooth local clock interpolation while playing between postMessage ticks
+  useEffect(() => {
+    if (!isPlaying) return;
+    const interval = window.setInterval(() => {
+      setCurrentTime((t) => t + 0.25);
+    }, 250);
+    return () => window.clearInterval(interval);
+  }, [isPlaying]);
+
+  // Fetch Arabic subtitle cues when Arabic CC mode is selected
+  useEffect(() => {
+    if (captionMode !== "ar" || customSubName) {
+      if (captionMode !== "ar") {
+        setCues([]);
+        setSubStatus("idle");
+      }
+      return;
+    }
+
+    let cancelled = false;
+    setSubStatus("loading");
+    setCues([]);
+
+    fetch(`/api/subtitles?episode=${episode.number}&lang=ar`)
+      .then((res) => res.json())
+      .then((data: { found?: boolean; cues?: SubtitleCue[] }) => {
+        if (cancelled) return;
+        if (data.found && Array.isArray(data.cues) && data.cues.length > 0) {
+          setCues(data.cues);
+          setSubStatus("ready");
+        } else {
+          setCues([]);
+          setSubStatus("missing");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCues([]);
+          setSubStatus("missing");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [episode.number, captionMode, customSubName]);
+
+  const handleUploadSubtitle = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const text = decodeSubtitleBuffer(buffer);
+      const parsed = parseSrtOrVtt(text);
+      if (parsed.length > 0) {
+        setCues(parsed);
+        setCustomSubName(file.name);
+        setSubStatus("ready");
+        onSelectCaptionMode("ar");
+      }
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const activeCue = useMemo(() => {
+    if (captionMode !== "ar" || cues.length === 0) return null;
+    return findActiveCue(cues, currentTime + timeOffset);
+  }, [captionMode, cues, currentTime, timeOffset]);
 
   const hasPrev = episode.number > 1;
   const hasNext = episode.number < TOTAL_EPISODES;
@@ -110,7 +278,7 @@ export function VideoPlayer({
         )}
       </div>
 
-      {/* 16:9 Cinema Video Frame */}
+      {/* 16:9 Cinema Video Frame + Synced Arabic Subtitle Overlay */}
       <div className="relative aspect-video w-full bg-black">
         {iframeLoading && (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2.5 bg-obsidian/90">
@@ -122,25 +290,32 @@ export function VideoPlayer({
         )}
 
         <iframe
-          key={`${embedUrl}-${adShieldEnabled ? "sandbox" : "open"}`}
+          key={embedUrl}
           src={embedUrl}
           title={`Black Clover Episode ${episode.number}: ${episode.title}`}
           className="h-full w-full border-0"
           allowFullScreen
           allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
           referrerPolicy="no-referrer"
-          sandbox={
-            adShieldEnabled
-              ? "allow-scripts allow-same-origin allow-presentation allow-forms"
-              : undefined
-          }
           onLoad={() => setIframeLoading(false)}
         />
+
+        {/* Synced Arabic Subtitle Overlay (non-blocking pointer-events-none) */}
+        {captionMode === "ar" && activeCue && (
+          <div className="pointer-events-none absolute inset-x-4 bottom-14 z-20 flex justify-center sm:bottom-16">
+            <div
+              dir="rtl"
+              className="max-w-[90%] whitespace-pre-line rounded-md bg-black/80 px-4 py-1.5 text-center text-sm font-medium leading-relaxed text-white shadow-lg sm:text-lg"
+            >
+              {activeCue.text}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Row 1: Server Switcher + English / Arabic CC Selector */}
+      {/* Unified Controls Row 1: Server Switcher + Working Captions Controls */}
       <div className="flex flex-col gap-3 border-t border-hairline bg-obsidian/50 px-4 py-3 sm:px-5 lg:flex-row lg:items-center lg:justify-between">
-        {/* Server Switcher */}
+        {/* 3 Working Servers */}
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="mr-1.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
             Server
@@ -164,65 +339,109 @@ export function VideoPlayer({
           })}
         </div>
 
-        {/* Captions Language Switcher (English CC / Arabic CC) */}
+        {/* Captions Selector (Arabic CC / English CC / Off) */}
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
             <Subtitles className="h-3.5 w-3.5" />
-            CC
+            Subtitles
           </span>
+
           <div className="inline-flex rounded-lg border border-hairline bg-obsidian p-0.5">
-            <button
-              type="button"
-              onClick={() => onSelectCaptionLanguage("en")}
-              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                captionLanguage === "en"
-                  ? "bg-zinc-800 text-white"
-                  : "text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              English CC
-            </button>
-            <button
-              type="button"
-              onClick={() => onSelectCaptionLanguage("ar")}
-              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                captionLanguage === "ar"
-                  ? "bg-zinc-800 text-white"
-                  : "text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              Arabic CC
-            </button>
+            {(
+              [
+                { id: "ar", label: "Arabic CC" },
+                { id: "en", label: "English CC" },
+                { id: "off", label: "Off" },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => {
+                  setCustomSubName(null);
+                  onSelectCaptionMode(opt.id);
+                }}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                  captionMode === opt.id
+                    ? "bg-zinc-800 text-white"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
+
+          {/* Load Custom .srt/.vtt File */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".srt,.vtt"
+            onChange={handleUploadSubtitle}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            title="Load a local .srt or .vtt Arabic subtitle file"
+            className="inline-flex items-center gap-1 rounded-md border border-hairline bg-surface px-2.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
+          >
+            <Upload className="h-3 w-3" />
+            <span>Load .srt</span>
+          </button>
         </div>
       </div>
 
-      {/* Subtle CC & Sandbox Helper Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline/60 bg-obsidian/30 px-4 py-2 text-[11px] text-zinc-500 sm:px-5">
-        <span>
-          {captionLanguage === "ar"
-            ? serverConfig.supportsArabicCC
-              ? "Arabic CC active — open the CC icon inside the player and select Arabic."
-              : "Switch to Server 1 (VidPlus) or Server 2 (VidLink) for Arabic captions."
-            : "English CC active — if a server is slow or unavailable, switch servers above."}
-        </span>
+      {/* Live Subtitle Status & Timing Sync Strip (only when Arabic CC is active) */}
+      {captionMode === "ar" && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline/60 bg-obsidian/30 px-4 py-2 text-[11px] text-zinc-400 sm:px-5">
+          <span>
+            {subStatus === "loading" && "Loading Arabic subtitle track…"}
+            {subStatus === "ready" &&
+              `${customSubName ? customSubName : "Arabic subtitles"} ready (${
+                cues.length
+              } lines)${
+                isSyncedWithPlayer
+                  ? " · Synced to player"
+                  : " · Press play in the video to start sync"
+              }`}
+            {subStatus === "missing" &&
+              `No Arabic track found online for Episode ${episode.number}. Click "Load .srt" to drop your own file.`}
+          </span>
 
-        <button
-          type="button"
-          onClick={onToggleAdShield}
-          className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
-            adShieldEnabled
-              ? "bg-zinc-800 text-zinc-200"
-              : "text-zinc-500 hover:text-zinc-300"
-          }`}
-          title="Enables iframe sandboxing to block popups. Turn off if a server refuses to play."
-        >
-          <Shield className="h-3 w-3" />
-          <span>Ad-Shield Sandbox: {adShieldEnabled ? "On" : "Off"}</span>
-        </button>
-      </div>
+          {subStatus === "ready" && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-zinc-500">Sync:</span>
+              <button
+                type="button"
+                onClick={() => setTimeOffset((o) => Number((o - 0.5).toFixed(1)))}
+                className="rounded border border-hairline bg-surface p-1 text-zinc-400 hover:text-white"
+                title="Delay subtitles by 0.5s"
+              >
+                <Minus className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimeOffset(0)}
+                className="min-w-[3rem] rounded border border-hairline bg-surface px-1.5 py-0.5 font-mono text-[11px] text-zinc-300 hover:text-white"
+                title="Reset sync offset"
+              >
+                {timeOffset >= 0 ? `+${timeOffset.toFixed(1)}s` : `${timeOffset.toFixed(1)}s`}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimeOffset((o) => Number((o + 0.5).toFixed(1)))}
+                className="rounded border border-hairline bg-surface p-1 text-zinc-400 hover:text-white"
+                title="Advance subtitles by 0.5s"
+              >
+                <Plus className="h-3 w-3" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
-      {/* Row 2: Episode Navigation & Watch Actions */}
+      {/* Unified Controls Row 2: Episode Navigation & Watch Actions */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 border-t border-hairline px-4 py-3 sm:px-5">
         <div className="flex items-center gap-2">
           <button

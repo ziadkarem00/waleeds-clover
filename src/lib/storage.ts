@@ -1,24 +1,23 @@
 import { clampEpisodeNumber } from "@/lib/arcs";
-import type { CaptionLanguage, ServerId, UserWatchState } from "@/types/anime";
+import type { CaptionMode, ServerId, UserWatchState } from "@/types/anime";
 
-const STORAGE_KEY = "waleeds_clover_watch_state_v2";
+const STORAGE_KEY = "waleeds_clover_watch_state_v3";
 
 export const DEFAULT_WATCH_STATE: UserWatchState = {
   lastWatched: null,
   watchedEpisodes: [],
   favoriteEpisodes: [],
-  preferredServer: "vidplus",
-  captionLanguage: "en",
-  adShieldEnabled: false,
+  preferredServer: "animeembed-ani",
+  captionMode: "ar",
 };
 
 const VALID_SERVERS: ServerId[] = [
-  "vidplus",
-  "vidlink",
   "animeembed-ani",
   "animeembed-mal",
   "animeembed-dub",
 ];
+
+const VALID_CAPTIONS: CaptionMode[] = ["en", "ar", "off"];
 
 export function loadWatchState(): UserWatchState {
   if (typeof window === "undefined") return DEFAULT_WATCH_STATE;
@@ -67,19 +66,19 @@ export function loadWatchState(): UserWatchState {
     const preferredServer: ServerId =
       parsed.preferredServer && VALID_SERVERS.includes(parsed.preferredServer)
         ? parsed.preferredServer
-        : "vidplus";
+        : "animeembed-ani";
 
-    const captionLanguage: CaptionLanguage =
-      parsed.captionLanguage === "ar" ? "ar" : "en";
+    const captionMode: CaptionMode =
+      parsed.captionMode && VALID_CAPTIONS.includes(parsed.captionMode)
+        ? parsed.captionMode
+        : "ar";
 
     return {
       lastWatched,
       watchedEpisodes,
       favoriteEpisodes,
       preferredServer,
-      captionLanguage,
-      adShieldEnabled:
-        typeof parsed.adShieldEnabled === "boolean" ? parsed.adShieldEnabled : false,
+      captionMode,
     };
   } catch {
     return DEFAULT_WATCH_STATE;

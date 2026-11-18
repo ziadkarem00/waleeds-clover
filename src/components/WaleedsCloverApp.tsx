@@ -15,7 +15,7 @@ import {
   saveWatchState,
 } from "@/lib/storage";
 import type {
-  CaptionLanguage,
+  CaptionMode,
   Episode,
   ServerId,
   StoryArcId,
@@ -23,7 +23,6 @@ import type {
 } from "@/types/anime";
 
 export function WaleedsCloverApp() {
-  // Always show Greeting Page on every visit
   const [showGreeting, setShowGreeting] = useState(true);
 
   const [episodes, setEpisodes] = useState<Episode[]>(() =>
@@ -203,26 +202,10 @@ export function WaleedsCloverApp() {
     }));
   }, []);
 
-  const handleSelectCaptionLanguage = useCallback((lang: CaptionLanguage) => {
-    setWatchState((prev) => {
-      // When selecting Arabic CC, switch to VidPlus if current server lacks Arabic CC
-      const needsMultiCC =
-        lang === "ar" &&
-        prev.preferredServer !== "vidplus" &&
-        prev.preferredServer !== "vidlink";
-
-      return {
-        ...prev,
-        captionLanguage: lang,
-        preferredServer: needsMultiCC ? "vidplus" : prev.preferredServer,
-      };
-    });
-  }, []);
-
-  const handleToggleAdShield = useCallback(() => {
+  const handleSelectCaptionMode = useCallback((mode: CaptionMode) => {
     setWatchState((prev) => ({
       ...prev,
-      adShieldEnabled: !prev.adShieldEnabled,
+      captionMode: mode,
     }));
   }, []);
 
@@ -293,8 +276,8 @@ export function WaleedsCloverApp() {
               episode={activeEpisode}
               activeServer={watchState.preferredServer}
               onSelectServer={handleSelectServer}
-              captionLanguage={watchState.captionLanguage}
-              onSelectCaptionLanguage={handleSelectCaptionLanguage}
+              captionMode={watchState.captionMode}
+              onSelectCaptionMode={handleSelectCaptionMode}
               isWatched={watchedSet.has(activeEpisode.number)}
               isFavorite={favoriteSet.has(activeEpisode.number)}
               onToggleWatched={handleToggleWatched}
@@ -302,8 +285,6 @@ export function WaleedsCloverApp() {
               onSelectEpisode={handleSelectEpisode}
               lightsOff={lightsOff}
               onToggleLightsOff={() => setLightsOff((prev) => !prev)}
-              adShieldEnabled={watchState.adShieldEnabled}
-              onToggleAdShield={handleToggleAdShield}
             />
           )}
         </div>
