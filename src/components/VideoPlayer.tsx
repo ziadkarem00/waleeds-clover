@@ -229,7 +229,7 @@ export function VideoPlayer({
     setSubLoading(true);
     setCues([]);
 
-    fetch(`/api/subtitles?episode=${episode.number}&lang=${captionMode}`)
+    fetch(`/api/subtitles?episode=${episode.number}&lang=${captionMode}&v=8`)
       .then((res) => res.json())
       .then((data: { found?: boolean; cues?: SubtitleCue[] }) => {
         if (cancelled) return;
