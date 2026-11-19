@@ -109,3 +109,9 @@ Open `http://localhost:3000` in your browser.
 2. Import it in [Vercel](https://vercel.com/new) with the default **Next.js** preset.
 
 3. Click **Deploy** — no environment variables or external database are required.
+
+---
+
+## License & Copyright
+
+© 2026 [Ziad Karem (@ziadkarem00)](https://github.com/ziadkarem00). All rights reserved.

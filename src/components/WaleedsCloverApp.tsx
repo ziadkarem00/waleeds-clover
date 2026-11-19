@@ -337,9 +337,16 @@ export function WaleedsCloverApp() {
       </main>
 
       <footer className="mt-14 border-t border-hairline py-6">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 text-xs text-zinc-600 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-4 text-xs text-zinc-500 sm:flex-row sm:px-6 lg:px-8">
           <span>Waleed&apos;s Clover · Dedicated to Walid</span>
-          <span>Black Clover Season 1 (Ep 1–170)</span>
+          <a
+            href="https://github.com/ziadkarem00"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-zinc-400 transition-colors hover:text-white hover:underline underline-offset-4"
+          >
+            © {new Date().getFullYear()} Ziad Karem (@ziadkarem00) · All rights reserved
+          </a>
         </div>
       </footer>
     </div>
