@@ -23,11 +23,6 @@ function parseTimestamp(raw: string): number {
   return NaN;
 }
 
-/**
- * Fixes legacy visual-order Arabic SRT punctuation where dots, commas,
- * question marks, exclamation marks, or ellipses were typed at the start
- * of a line for old LTR video players.
- */
 export function normalizeArabicLine(line: string): string {
   let text = line.replace(BIDI_CONTROL_RE, "").replace(/\s+/g, " ").trim();
   if (!text || !ARABIC_CHAR_RE.test(text)) return text;
@@ -121,7 +116,7 @@ export function parseSrtOrVtt(content: string): SubtitleCue[] {
     cues.push({ start, end, text });
   }
 
-  return cues.sort((a, b) => a.start - b.start);
+  return cues.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
 export function decodeSubtitleBuffer(buffer: ArrayBuffer): string {
@@ -136,26 +131,29 @@ export function decodeSubtitleBuffer(buffer: ArrayBuffer): string {
   return utf8Text;
 }
 
-export function findActiveCue(
+/**
+ * Returns all cues active at timeSeconds (properly handles overlapping anime
+ * title/sign cards and spoken dialogue cues without dropping dialogue).
+ */
+export function findActiveCues(
   cues: SubtitleCue[],
   timeSeconds: number
-): SubtitleCue | null {
-  if (cues.length === 0 || !Number.isFinite(timeSeconds)) return null;
+): SubtitleCue[] {
+  if (cues.length === 0 || !Number.isFinite(timeSeconds)) return [];
 
-  let low = 0;
-  let high = cues.length - 1;
+  const active: SubtitleCue[] = [];
+  const seen = new Set<string>();
 
-  while (low <= high) {
-    const mid = (low + high) >>> 1;
-    const cue = cues[mid];
-    if (timeSeconds < cue.start) {
-      high = mid - 1;
-    } else if (timeSeconds > cue.end) {
-      low = mid + 1;
-    } else {
-      return cue;
+  for (let i = 0; i < cues.length; i++) {
+    const cue = cues[i];
+    if (cue.start > timeSeconds) break;
+    if (cue.end >= timeSeconds) {
+      if (!seen.has(cue.text)) {
+        seen.add(cue.text);
+        active.push(cue);
+      }
     }
   }
 
-  return null;
+  return active.slice(-2);
 }

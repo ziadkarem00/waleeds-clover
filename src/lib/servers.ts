@@ -8,9 +8,9 @@ function buildAnimeEmbedParams(extraParams: Record<string, string>): string {
   }
 
   params.set("accent", "dc2626");
-  // Hide in-player settings & CC controls and disable native captions so our unified
-  // multi-provider overlay handles BOTH English CC and Arabic CC reliably across all 170 episodes
-  params.set("hide", "settings,captions");
+  // Hide in-player settings, captions, PiP, and native iframe fullscreen so our
+  // wrapper Fullscreen button keeps synced Arabic/English subtitles visible in fullscreen.
+  params.set("hide", "settings,captions,fullscreen,pip");
   params.set("captions", "off");
 
   return params.toString();

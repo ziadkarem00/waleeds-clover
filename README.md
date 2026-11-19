@@ -1,28 +1,111 @@
-# Waleed's Clover — Black Clover Season 1 (Episodes 1–170)
+<div align="center">
 
-A minimal, dark-mode streaming web application dedicated exclusively to **Black Clover Season 1 (Episodes 1–170)** — built for **Walid** with Next.js App Router, TypeScript, Tailwind CSS, and Lucide React.
+# Waleed's Clover
 
-## Highlights
+**A minimal, dark-mode streaming web app dedicated exclusively to *Black Clover* Season 1 (Episodes 1–170) — built for Walid.**
 
-- **Minimal Cinema Dark Theme**: Matte obsidian (`#09090B`) and charcoal (`#111114`) surfaces, hairline borders, a monochrome + crimson Five-Leaf Clover mark, and a custom browser tab favicon (`src/app/icon.svg`).
-- **Greeting Page on Every Visit**: Clean full-screen welcome curtain with time-of-day greeting, Season 1 progress bar, and instant resume.
-- **English UI with English CC / Arabic CC Switcher**: 100% English interface with a built-in **English CC / Arabic CC** selector and 5 verified embed servers (VidPlus & VidLink for multi-language EN/AR captions, plus AnimeEmbed AniList, MAL Mirror, and English Dub).
-- **Reliable Jikan API v4 Sync**: Server-side cached `/api/episodes` route (24h revalidation + 429 retry-backoff) paired with `localStorage` caching and a 170-episode offline fallback.
-- **Zero Backend Required**: Automatically persists last watched episode, timestamp/status, watched checkmarks, favorites, server choice, and CC preference in browser `localStorage`.
+</div>
+
+## Screenshots
+
+| Welcome Screen | Theater Player & Arabic CC | Story Arcs & Episode Grid | 
+| ----- | ----- | ----- | 
+|  |  |  | 
+
+## Features
+
+* **Personalized Welcome Curtain**: Greets Waleed on every visit with time-of-day messaging, rotating *Black Clover* quotes, live Season 1 progress (`X / 170`), and one-click **Resume Episode**.
+
+* **Season 1 Exclusive (Episodes 1–170)**: Fetches official episode metadata from **Jikan API v4** via a server-cached `/api/episodes` route, stores it in `localStorage` for instant repeat loads, and includes a built-in 170-episode offline fallback.
+
+* **3 Working Stream Servers**: One-click switching between **Server 1 (Primary Sub)**, **Server 2 (MAL Mirror)**, and **Server 3 (English Dub)** via AnimeEmbed (`AniList: 97940` / `MAL: 34572`), with in-player clutter hidden.
+
+* **Synced Arabic & English Subtitles (Ep 1–170)**: Dual-provider subtitle engine (`/api/subtitles`) querying **SubtitleCat** and **OpenSubtitles v3**, with automatic English-to-Arabic translation and RTL punctuation normalization so every episode supports **Arabic CC**, **English CC**, and **Off**.
+
+* **Subtitle Style & Timing Controls**: Customize subtitle **Size** (`S / M / L / XL`), **Background** (`None / Subtle / Box`), **Color** (`White / Yellow`), **Position** (`Low / Standard / High`), and **Timing Sync** (`±0.5s`), plus a custom **Fullscreen** mode that keeps Arabic captions visible.
+
+* **Story Arc Filters & Search**: Filter all 170 episodes by official Season 1 story arcs, search by episode number or title, hide filler episodes, or view favorites.
+
+* **Zero-Backend Persistence**: Automatically saves last watched episode, timestamp/status, watched checkmarks, favorites, preferred server, and subtitle styling in browser `localStorage`.
+
+## Story Arcs Covered
+
+| Story Arc | Episodes | 
+| ----- | ----- | 
+| **All Episodes** | `1–170` | 
+| **Magic Knights Entrance & Dungeon** | `1–19` | 
+| **Royal Capital & Eye of the Midnight Sun** | `20–39` | 
+| **Seabed Temple & Witches' Forest** | `40–65` | 
+| **Royal Knights Selection** | `66–84` | 
+| **Elf Reincarnation Arc** | `85–129` | 
+| **Heart Kingdom & Spade Raid** | `130–170` | 
+
+## Tech Stack
+
+| Layer | Technology | 
+| ----- | ----- | 
+| **Framework** | Next.js 15 (App Router) | 
+| **UI & Styling** | React 19, TypeScript, Tailwind CSS | 
+| **Icons** | Lucide React | 
+| **Episode Metadata** | Jikan API v4 + `localStorage` cache | 
+| **Subtitles** | SubtitleCat + OpenSubtitles v3 (`/api/subtitles`) | 
+| **Persistence** | Browser `localStorage` | 
+| **Deployment** | Vercel | 
+
+## Project Structure
+
+```
+waleeds-clover/
+├── screenshots/
+│   ├── 01-welcome.png
+│   ├── 02-player-arabic-cc.png
+│   └── 03-episodes-arcs.png
+├── src/
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── episodes/route.ts
+│   │   │   └── subtitles/route.ts
+│   │   ├── globals.css
+│   │   ├── icon.svg
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── components/
+│   │   ├── EpisodeFilters.tsx
+│   │   ├── EpisodeGrid.tsx
+│   │   ├── FiveLeafLogo.tsx
+│   │   ├── GreetingOverlay.tsx
+│   │   ├── HeroBanner.tsx
+│   │   ├── Navbar.tsx
+│   │   ├── VideoPlayer.tsx
+│   │   └── WaleedsCloverApp.tsx
+│   ├── lib/
+│   │   ├── arcs.ts
+│   │   ├── jikan.ts
+│   │   ├── servers.ts
+│   │   ├── storage.ts
+│   │   └── subtitles.ts
+│   └── types/
+│       └── anime.ts
+├── next.config.ts
+├── tailwind.config.ts
+└── package.json
+
+```
 
 ## Run Locally
 
-```bash
+```
 npm install
 npm run dev
+
 ```
 
-## Push to GitHub & Deploy on Vercel
+Open `http://localhost:3000` in your browser.
 
-```bash
-git add .
-git commit -m "Redesign UI, fix embed servers and Jikan API route"
-git push
-```
+## Deploy to Vercel
 
-Vercel will automatically rebuild and redeploy with no environment variables needed.
+1. Push the repository to GitHub.
+
+2. Import it in [Vercel](https://vercel.com/new) with the default **Next.js** preset.
+
+3. Click **Deploy** — no environment variables or external database are required.

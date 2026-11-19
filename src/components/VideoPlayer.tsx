@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { TOTAL_EPISODES } from "@/lib/arcs";
 import { EMBED_SERVERS, getServerById } from "@/lib/servers";
-import { findActiveCue } from "@/lib/subtitles";
+import { findActiveCues } from "@/lib/subtitles";
 import type {
   CaptionMode,
   Episode,
@@ -55,6 +55,13 @@ const SIZE_CLASSES: Record<SubtitleSize, string> = {
   xl: "text-lg sm:text-3xl",
 };
 
+const FULLSCREEN_SIZE_CLASSES: Record<SubtitleSize, string> = {
+  sm: "text-base sm:text-xl",
+  md: "text-lg sm:text-2xl",
+  lg: "text-xl sm:text-3xl",
+  xl: "text-2xl sm:text-4xl",
+};
+
 const POSITION_CLASSES: Record<SubtitlePosition, string> = {
   low: "bottom-7 sm:bottom-11",
   standard: "bottom-11 sm:bottom-16",
@@ -75,9 +82,9 @@ const COLOR_CLASSES: Record<SubtitleColor, string> = {
 const BASE_TEXT_SHADOW =
   "0 2px 4px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,1), 1px 1px 0 rgba(0,0,0,0.95), -1px -1px 0 rgba(0,0,0,0.95), 1px -1px 0 rgba(0,0,0,0.95), -1px 1px 0 rgba(0,0,0,0.95)";
 
-function extractTimeFromMessage(raw: unknown): {
+function extractPlayerEvent(raw: unknown): {
   time?: number;
-  playing?: boolean;
+  state?: "playing" | "paused" | "buffering";
 } {
   let data: unknown = raw;
   if (typeof data === "string") {
@@ -102,10 +109,17 @@ function extractTimeFromMessage(raw: unknown): {
     obj.event ?? obj.type ?? nested?.event ?? ""
   ).toLowerCase();
 
-  let playing: boolean | undefined;
-  if (eventName === "play" || eventName === "playing") playing = true;
-  if (eventName === "pause" || eventName === "paused" || eventName === "ended") {
-    playing = false;
+  let state: "playing" | "paused" | "buffering" | undefined;
+  if (eventName === "play" || eventName === "playing") {
+    state = "playing";
+  } else if (
+    eventName === "pause" ||
+    eventName === "paused" ||
+    eventName === "ended"
+  ) {
+    state = "paused";
+  } else if (eventName === "buffering" || eventName === "waiting") {
+    state = "buffering";
   }
 
   const candidateValues = [
@@ -119,11 +133,11 @@ function extractTimeFromMessage(raw: unknown): {
 
   for (const val of candidateValues) {
     if (typeof val === "number" && Number.isFinite(val) && val >= 0) {
-      return { time: val, playing };
+      return { time: val, state };
     }
   }
 
-  return { playing };
+  return { state };
 }
 
 export function VideoPlayer({
@@ -146,32 +160,69 @@ export function VideoPlayer({
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [subLoading, setSubLoading] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [timeOffset, setTimeOffset] = useState(0);
   const [showSubSettings, setShowSubSettings] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
+  const [isFallbackFullscreen, setIsFallbackFullscreen] = useState(false);
 
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
   const playerFrameRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
+  // High-precision drift-free playback clock anchored to AnimeEmbed progress messages
+  const syncAnchorRef = useRef<{
+    baseTime: number;
+    anchorPerf: number;
+    playing: boolean;
+    lastTickPerf: number;
+  }>({
+    baseTime: 0,
+    anchorPerf: 0,
+    playing: false,
+    lastTickPerf: 0,
+  });
+
   const serverConfig = getServerById(activeServer);
   const embedUrl = serverConfig.buildUrl(episode.number);
 
+  const isAnyFullscreen = isNativeFullscreen || isFallbackFullscreen;
+
+  // Reset clock cleanly on episode or server change
   useEffect(() => {
     setIframeLoading(true);
     setCurrentTime(0);
-    setIsPlaying(false);
     setTimeOffset(0);
+    syncAnchorRef.current = {
+      baseTime: 0,
+      anchorPerf: 0,
+      playing: false,
+      lastTickPerf: 0,
+    };
   }, [episode.number, activeServer]);
 
+  // Listen for native fullscreen exit / change
   useEffect(() => {
     const onFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      setIsNativeFullscreen(Boolean(document.fullscreenElement));
     };
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
+
+  // Lock body scroll and support Escape key when using CSS fullscreen fallback (e.g., iOS)
+  useEffect(() => {
+    if (!isFallbackFullscreen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsFallbackFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [isFallbackFullscreen]);
 
   useEffect(() => {
     if (!showSubSettings) return;
@@ -187,6 +238,7 @@ export function VideoPlayer({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showSubSettings]);
 
+  // Listen for AnimeEmbed PostMessage progress / play / pause / buffering events
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (!event.origin.includes("animeembed.com")) return;
@@ -196,12 +248,39 @@ export function VideoPlayer({
       ) {
         return;
       }
-      const parsed = extractTimeFromMessage(event.data);
+
+      const parsed = extractPlayerEvent(event.data);
+      const now = performance.now();
+      const anchor = syncAnchorRef.current;
+
       if (typeof parsed.time === "number") {
+        // Detect if time is advancing between ticks so subtitles start immediately
+        // even if a browser omits an explicit 'play' event
+        const wasAdvancing =
+          anchor.lastTickPerf > 0 && parsed.time > anchor.baseTime + 0.01;
+        anchor.baseTime = parsed.time;
+        anchor.anchorPerf = now;
+        anchor.lastTickPerf = now;
+        if (parsed.state === "playing") {
+          anchor.playing = true;
+        } else if (parsed.state === "paused" || parsed.state === "buffering") {
+          anchor.playing = false;
+        } else if (wasAdvancing) {
+          anchor.playing = true;
+        }
         setCurrentTime(parsed.time);
-      }
-      if (typeof parsed.playing === "boolean") {
-        setIsPlaying(parsed.playing);
+      } else if (parsed.state) {
+        if (parsed.state === "playing") {
+          anchor.anchorPerf = now;
+          anchor.playing = true;
+        } else {
+          if (anchor.playing && anchor.anchorPerf > 0) {
+            anchor.baseTime += (now - anchor.anchorPerf) / 1000;
+          }
+          anchor.anchorPerf = now;
+          anchor.playing = false;
+          setCurrentTime(anchor.baseTime);
+        }
       }
     };
 
@@ -209,15 +288,32 @@ export function VideoPlayer({
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
+  // Drift-free animation frame loop anchored to last player timestamp
   useEffect(() => {
-    if (!isPlaying) return;
-    const interval = window.setInterval(() => {
-      setCurrentTime((t) => t + 0.25);
-    }, 250);
-    return () => window.clearInterval(interval);
-  }, [isPlaying]);
+    let rafId = 0;
 
-  // Fetch synced subtitles for BOTH Arabic CC and English CC via our multi-provider route
+    const tick = () => {
+      const anchor = syncAnchorRef.current;
+      if (anchor.playing && anchor.anchorPerf > 0) {
+        const now = performance.now();
+        // Safety cap: if player stops sending progress ticks for >3s (e.g. stalled), pause local drift
+        const sinceLastTick =
+          anchor.lastTickPerf > 0 ? (now - anchor.lastTickPerf) / 1000 : 0;
+        if (sinceLastTick <= 3) {
+          const exactTime = anchor.baseTime + (now - anchor.anchorPerf) / 1000;
+          setCurrentTime((prev) =>
+            Math.abs(exactTime - prev) >= 0.05 ? exactTime : prev
+          );
+        }
+      }
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(rafId);
+  }, []);
+
+  // Fetch synced subtitles for BOTH Arabic CC and English CC
   useEffect(() => {
     if (captionMode === "off") {
       setCues([]);
@@ -252,21 +348,33 @@ export function VideoPlayer({
     };
   }, [episode.number, captionMode]);
 
-  const handleToggleFullscreen = async () => {
+  const handleToggleFullscreen = useCallback(async () => {
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
-      } else if (playerFrameRef.current?.requestFullscreen) {
-        await playerFrameRef.current.requestFullscreen();
+        setIsFallbackFullscreen(false);
+        return;
+      }
+      if (isFallbackFullscreen) {
+        setIsFallbackFullscreen(false);
+        return;
+      }
+
+      const container = playerFrameRef.current;
+      if (container && typeof container.requestFullscreen === "function") {
+        await container.requestFullscreen();
+      } else {
+        // Fallback for iOS Safari where div.requestFullscreen is unavailable
+        setIsFallbackFullscreen(true);
       }
     } catch {
-      // Ignore fullscreen rejection on unsupported browsers
+      setIsFallbackFullscreen((prev) => !prev);
     }
-  };
+  }, [isFallbackFullscreen]);
 
-  const activeCue = useMemo(() => {
-    if (captionMode === "off" || cues.length === 0) return null;
-    return findActiveCue(cues, currentTime + timeOffset);
+  const activeCues = useMemo(() => {
+    if (captionMode === "off" || cues.length === 0) return [];
+    return findActiveCues(cues, currentTime + timeOffset);
   }, [captionMode, cues, currentTime, timeOffset]);
 
   const isRtl = captionMode === "ar";
@@ -322,10 +430,14 @@ export function VideoPlayer({
         )}
       </div>
 
-      {/* 16:9 Cinema Video Frame + Unified Synced Subtitle Overlay (EN & AR) */}
+      {/* 16:9 Cinema Video Frame + Unified Synced Subtitle Overlay (stays visible in Fullscreen!) */}
       <div
         ref={playerFrameRef}
-        className="relative aspect-video w-full overflow-hidden bg-black"
+        className={
+          isFallbackFullscreen
+            ? "fixed inset-0 z-[90] flex h-screen w-screen items-center justify-center bg-black"
+            : "relative aspect-video w-full overflow-hidden bg-black"
+        }
       >
         {iframeLoading && (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2.5 bg-obsidian/90">
@@ -342,43 +454,68 @@ export function VideoPlayer({
           src={embedUrl}
           title={`Black Clover Episode ${episode.number}: ${episode.title}`}
           className="h-full w-full border-0"
-          allowFullScreen
-          allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+          allow="autoplay; encrypted-media"
           referrerPolicy="no-referrer"
           onLoad={() => setIframeLoading(false)}
         />
 
-        {/* Cinema-Style Subtitle Overlay (works for BOTH Arabic CC and English CC without reloading video) */}
-        {captionMode !== "off" && activeCue && (
+        {/* Custom Wrapper Fullscreen Button (replaces iframe fullscreen so subtitles NEVER vanish) */}
+        <button
+          type="button"
+          onClick={handleToggleFullscreen}
+          aria-label={isAnyFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+          title={
+            isAnyFullscreen
+              ? "Exit Fullscreen"
+              : "Fullscreen (with subtitles)"
+          }
+          className="absolute right-3 top-3 z-30 flex h-8 w-8 items-center justify-center rounded-lg border border-white/15 bg-black/60 text-zinc-200 backdrop-blur-sm transition-colors hover:bg-black/85 hover:text-white"
+        >
+          {isAnyFullscreen ? (
+            <Minimize2 className="h-4 w-4" />
+          ) : (
+            <Maximize2 className="h-4 w-4" />
+          )}
+        </button>
+
+        {/* Cinema-Style Subtitle Overlay (works in normal AND fullscreen for both Arabic & English CC) */}
+        {captionMode !== "off" && activeCues.length > 0 && (
           <div
-            className={`pointer-events-none absolute inset-x-3 z-20 flex justify-center sm:inset-x-6 ${
-              POSITION_CLASSES[subtitleSettings.position]
+            className={`pointer-events-none absolute inset-x-3 z-20 flex flex-col items-center gap-1 sm:inset-x-8 ${
+              isAnyFullscreen
+                ? "bottom-14 sm:bottom-20"
+                : POSITION_CLASSES[subtitleSettings.position]
             }`}
           >
-            <div
-              dir={isRtl ? "rtl" : "ltr"}
-              style={{
-                textShadow: BASE_TEXT_SHADOW,
-                fontFamily: isRtl
-                  ? "var(--font-subtitle-ar), Tahoma, system-ui, sans-serif"
-                  : "var(--font-inter), system-ui, sans-serif",
-              }}
-              className={`max-w-[92%] text-center font-semibold leading-snug ${
-                SIZE_CLASSES[subtitleSettings.size]
-              } ${BG_CLASSES[subtitleSettings.background]} ${
-                COLOR_CLASSES[subtitleSettings.color]
-              }`}
-            >
-              {activeCue.text.split("\n").map((line, idx) => (
-                <p
-                  key={idx}
-                  dir={isRtl ? "rtl" : "ltr"}
-                  style={{ unicodeBidi: "isolate" }}
-                >
-                  {line}
-                </p>
-              ))}
-            </div>
+            {activeCues.map((cue, cueIdx) => (
+              <div
+                key={`${cue.start}-${cueIdx}`}
+                dir={isRtl ? "rtl" : "ltr"}
+                style={{
+                  textShadow: BASE_TEXT_SHADOW,
+                  fontFamily: isRtl
+                    ? "var(--font-subtitle-ar), Tahoma, system-ui, sans-serif"
+                    : "var(--font-inter), system-ui, sans-serif",
+                }}
+                className={`max-w-[92%] text-center font-semibold leading-snug ${
+                  isAnyFullscreen
+                    ? FULLSCREEN_SIZE_CLASSES[subtitleSettings.size]
+                    : SIZE_CLASSES[subtitleSettings.size]
+                } ${BG_CLASSES[subtitleSettings.background]} ${
+                  COLOR_CLASSES[subtitleSettings.color]
+                }`}
+              >
+                {cue.text.split("\n").map((line, idx) => (
+                  <p
+                    key={idx}
+                    dir={isRtl ? "rtl" : "ltr"}
+                    style={{ unicodeBidi: "isolate" }}
+                  >
+                    {line}
+                  </p>
+                ))}
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -701,12 +838,12 @@ export function VideoPlayer({
             title="Fullscreen with subtitles visible"
             className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-obsidian px-3 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
           >
-            {isFullscreen ? (
+            {isAnyFullscreen ? (
               <Minimize2 className="h-3.5 w-3.5" />
             ) : (
               <Maximize2 className="h-3.5 w-3.5" />
             )}
-            <span>{isFullscreen ? "Exit Full" : "Fullscreen"}</span>
+            <span>{isAnyFullscreen ? "Exit Full" : "Fullscreen"}</span>
           </button>
 
           <button
