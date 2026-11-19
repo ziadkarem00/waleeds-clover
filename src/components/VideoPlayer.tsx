@@ -11,21 +11,22 @@ import {
   Loader2,
   Minus,
   Plus,
+  SlidersHorizontal,
   Subtitles,
-  Upload,
 } from "lucide-react";
 import { TOTAL_EPISODES } from "@/lib/arcs";
 import { EMBED_SERVERS, getServerById } from "@/lib/servers";
-import {
-  decodeSubtitleBuffer,
-  findActiveCue,
-  parseSrtOrVtt,
-} from "@/lib/subtitles";
+import { findActiveCue } from "@/lib/subtitles";
 import type {
   CaptionMode,
   Episode,
   ServerId,
+  SubtitleBackground,
+  SubtitleColor,
   SubtitleCue,
+  SubtitlePosition,
+  SubtitleSettings,
+  SubtitleSize,
 } from "@/types/anime";
 
 interface VideoPlayerProps {
@@ -34,6 +35,8 @@ interface VideoPlayerProps {
   onSelectServer: (server: ServerId) => void;
   captionMode: CaptionMode;
   onSelectCaptionMode: (mode: CaptionMode) => void;
+  subtitleSettings: SubtitleSettings;
+  onUpdateSubtitleSettings: (patch: Partial<SubtitleSettings>) => void;
   isWatched: boolean;
   isFavorite: boolean;
   onToggleWatched: (episodeNumber: number) => void;
@@ -42,6 +45,37 @@ interface VideoPlayerProps {
   lightsOff: boolean;
   onToggleLightsOff: () => void;
 }
+
+const SIZE_CLASSES: Record<SubtitleSize, string> = {
+  sm: "text-sm sm:text-base",
+  md: "text-base sm:text-xl",
+  lg: "text-lg sm:text-2xl",
+  xl: "text-xl sm:text-3xl",
+};
+
+const POSITION_CLASSES: Record<SubtitlePosition, string> = {
+  low: "bottom-8 sm:bottom-11",
+  standard: "bottom-12 sm:bottom-16",
+  high: "bottom-20 sm:bottom-24",
+};
+
+const BG_CLASSES: Record<SubtitleBackground, string> = {
+  none: "bg-transparent px-2 py-0.5",
+  subtle: "rounded-md bg-black/45 px-3.5 py-1 backdrop-blur-[2px]",
+  box: "rounded-md bg-black/80 px-4 py-1.5",
+};
+
+const COLOR_CLASSES: Record<SubtitleColor, string> = {
+  white: "text-white",
+  yellow: "text-yellow-300",
+};
+
+// Crisp cinema drop-shadow & outline so text is razor-sharp with NO black box
+const CINEMA_OUTLINE_STYLE: React.CSSProperties = {
+  textShadow:
+    "0 2px 4px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,1), 1px 1px 0 rgba(0,0,0,0.95), -1px -1px 0 rgba(0,0,0,0.95), 1px -1px 0 rgba(0,0,0,0.95), -1px 1px 0 rgba(0,0,0,0.95)",
+  fontFamily: "var(--font-subtitle-ar), Tahoma, system-ui, sans-serif",
+};
 
 function extractTimeFromMessage(raw: unknown): {
   time?: number;
@@ -100,6 +134,8 @@ export function VideoPlayer({
   onSelectServer,
   captionMode,
   onSelectCaptionMode,
+  subtitleSettings,
+  onUpdateSubtitleSettings,
   isWatched,
   isFavorite,
   onToggleWatched,
@@ -109,32 +145,43 @@ export function VideoPlayer({
   onToggleLightsOff,
 }: VideoPlayerProps) {
   const [iframeLoading, setIframeLoading] = useState(true);
-
-  // Synced subtitle overlay state (used for Arabic CC or uploaded .srt/.vtt)
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [subStatus, setSubStatus] = useState<
     "idle" | "loading" | "ready" | "missing"
   >("idle");
-  const [customSubName, setCustomSubName] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [isSyncedWithPlayer, setIsSyncedWithPlayer] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [timeOffset, setTimeOffset] = useState(0);
+  const [showSubSettings, setShowSubSettings] = useState(false);
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const settingsPanelRef = useRef<HTMLDivElement | null>(null);
 
   const serverConfig = getServerById(activeServer);
   const embedUrl = serverConfig.buildUrl(episode.number);
 
-  // Reset loading & player clock on episode or server change
   useEffect(() => {
     setIframeLoading(true);
     setCurrentTime(0);
     setIsSyncedWithPlayer(false);
     setIsPlaying(false);
     setTimeOffset(0);
-    setCustomSubName(null);
   }, [embedUrl]);
+
+  // Close subtitle settings popover on outside click
+  useEffect(() => {
+    if (!showSubSettings) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        settingsPanelRef.current &&
+        !settingsPanelRef.current.contains(event.target as Node)
+      ) {
+        setShowSubSettings(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showSubSettings]);
 
   // Listen for AnimeEmbed PostMessage progress / play / pause events
   useEffect(() => {
@@ -154,7 +201,7 @@ export function VideoPlayer({
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // Smooth local clock interpolation while playing between postMessage ticks
+  // Smooth local clock interpolation while playing
   useEffect(() => {
     if (!isPlaying) return;
     const interval = window.setInterval(() => {
@@ -163,13 +210,11 @@ export function VideoPlayer({
     return () => window.clearInterval(interval);
   }, [isPlaying]);
 
-  // Fetch Arabic subtitle cues when Arabic CC mode is selected
+  // Fetch Arabic subtitle cues when Arabic CC is active
   useEffect(() => {
-    if (captionMode !== "ar" || customSubName) {
-      if (captionMode !== "ar") {
-        setCues([]);
-        setSubStatus("idle");
-      }
+    if (captionMode !== "ar") {
+      setCues([]);
+      setSubStatus("idle");
       return;
     }
 
@@ -199,27 +244,7 @@ export function VideoPlayer({
     return () => {
       cancelled = true;
     };
-  }, [episode.number, captionMode, customSubName]);
-
-  const handleUploadSubtitle = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const buffer = await file.arrayBuffer();
-      const text = decodeSubtitleBuffer(buffer);
-      const parsed = parseSrtOrVtt(text);
-      if (parsed.length > 0) {
-        setCues(parsed);
-        setCustomSubName(file.name);
-        setSubStatus("ready");
-        onSelectCaptionMode("ar");
-      }
-    } finally {
-      event.target.value = "";
-    }
-  };
+  }, [episode.number, captionMode]);
 
   const activeCue = useMemo(() => {
     if (captionMode !== "ar" || cues.length === 0) return null;
@@ -231,7 +256,7 @@ export function VideoPlayer({
 
   return (
     <section
-      className={`relative overflow-hidden rounded-xl border transition-colors ${
+      className={`relative rounded-xl border transition-colors ${
         lightsOff
           ? "z-50 border-zinc-700 bg-obsidian"
           : "border-hairline bg-surface"
@@ -279,7 +304,7 @@ export function VideoPlayer({
       </div>
 
       {/* 16:9 Cinema Video Frame + Synced Arabic Subtitle Overlay */}
-      <div className="relative aspect-video w-full bg-black">
+      <div className="relative aspect-video w-full overflow-hidden bg-black">
         {iframeLoading && (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2.5 bg-obsidian/90">
             <Loader2 className="h-7 w-7 animate-spin text-crimson" />
@@ -300,20 +325,37 @@ export function VideoPlayer({
           onLoad={() => setIframeLoading(false)}
         />
 
-        {/* Synced Arabic Subtitle Overlay (non-blocking pointer-events-none) */}
+        {/* Cinema-Style Arabic Subtitle Overlay */}
         {captionMode === "ar" && activeCue && (
-          <div className="pointer-events-none absolute inset-x-4 bottom-14 z-20 flex justify-center sm:bottom-16">
+          <div
+            className={`pointer-events-none absolute inset-x-4 z-20 flex justify-center ${
+              POSITION_CLASSES[subtitleSettings.position]
+            }`}
+          >
             <div
               dir="rtl"
-              className="max-w-[90%] whitespace-pre-line rounded-md bg-black/80 px-4 py-1.5 text-center text-sm font-medium leading-relaxed text-white shadow-lg sm:text-lg"
+              style={CINEMA_OUTLINE_STYLE}
+              className={`max-w-[90%] text-center font-semibold leading-snug ${
+                SIZE_CLASSES[subtitleSettings.size]
+              } ${BG_CLASSES[subtitleSettings.background]} ${
+                COLOR_CLASSES[subtitleSettings.color]
+              }`}
             >
-              {activeCue.text}
+              {activeCue.text.split("\n").map((line, idx) => (
+                <p
+                  key={idx}
+                  dir="rtl"
+                  style={{ unicodeBidi: "isolate" }}
+                >
+                  {line}
+                </p>
+              ))}
             </div>
           </div>
         )}
       </div>
 
-      {/* Unified Controls Row 1: Server Switcher + Working Captions Controls */}
+      {/* Unified Controls Row 1: Server Switcher + Subtitles + Subtitle Settings */}
       <div className="flex flex-col gap-3 border-t border-hairline bg-obsidian/50 px-4 py-3 sm:px-5 lg:flex-row lg:items-center lg:justify-between">
         {/* 3 Working Servers */}
         <div className="flex flex-wrap items-center gap-1.5">
@@ -339,8 +381,8 @@ export function VideoPlayer({
           })}
         </div>
 
-        {/* Captions Selector (Arabic CC / English CC / Off) */}
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Subtitles Switcher + Professional Subtitle Style Settings */}
+        <div className="relative flex flex-wrap items-center gap-2" ref={settingsPanelRef}>
           <span className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
             <Subtitles className="h-3.5 w-3.5" />
             Subtitles
@@ -357,10 +399,7 @@ export function VideoPlayer({
               <button
                 key={opt.id}
                 type="button"
-                onClick={() => {
-                  setCustomSubName(null);
-                  onSelectCaptionMode(opt.id);
-                }}
+                onClick={() => onSelectCaptionMode(opt.id)}
                 className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                   captionMode === opt.id
                     ? "bg-zinc-800 text-white"
@@ -372,71 +411,218 @@ export function VideoPlayer({
             ))}
           </div>
 
-          {/* Load Custom .srt/.vtt File */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".srt,.vtt"
-            onChange={handleUploadSubtitle}
-            className="hidden"
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            title="Load a local .srt or .vtt Arabic subtitle file"
-            className="inline-flex items-center gap-1 rounded-md border border-hairline bg-surface px-2.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
-          >
-            <Upload className="h-3 w-3" />
-            <span>Load .srt</span>
-          </button>
+          {captionMode === "ar" && (
+            <button
+              type="button"
+              onClick={() => setShowSubSettings((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                showSubSettings
+                  ? "border-zinc-600 bg-zinc-800 text-white"
+                  : "border-hairline bg-surface text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+              }`}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span>Style</span>
+            </button>
+          )}
+
+          {/* Subtitle Style & Sync Popover */}
+          {showSubSettings && captionMode === "ar" && (
+            <div className="absolute bottom-full right-0 z-30 mb-2 w-72 rounded-xl border border-hairline bg-surface p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between border-b border-hairline pb-2">
+                <span className="text-xs font-semibold text-zinc-200">
+                  Subtitle Settings
+                </span>
+                <span className="text-[11px] text-zinc-500">
+                  {subStatus === "ready"
+                    ? `${cues.length} lines`
+                    : subStatus === "loading"
+                    ? "Loading…"
+                    : "Unavailable"}
+                </span>
+              </div>
+
+              <div className="space-y-3.5 text-xs">
+                {/* Text Size */}
+                <div className="space-y-1.5">
+                  <span className="block text-[11px] font-medium text-zinc-400">
+                    Size
+                  </span>
+                  <div className="grid grid-cols-4 gap-1 rounded-lg border border-hairline bg-obsidian p-0.5">
+                    {(
+                      [
+                        { id: "sm", label: "S" },
+                        { id: "md", label: "M" },
+                        { id: "lg", label: "L" },
+                        { id: "xl", label: "XL" },
+                      ] as const
+                    ).map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => onUpdateSubtitleSettings({ size: s.id })}
+                        className={`rounded-md py-1 font-medium transition-colors ${
+                          subtitleSettings.size === s.id
+                            ? "bg-zinc-800 text-white"
+                            : "text-zinc-500 hover:text-zinc-300"
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Background Style */}
+                <div className="space-y-1.5">
+                  <span className="block text-[11px] font-medium text-zinc-400">
+                    Background
+                  </span>
+                  <div className="grid grid-cols-3 gap-1 rounded-lg border border-hairline bg-obsidian p-0.5">
+                    {(
+                      [
+                        { id: "none", label: "None" },
+                        { id: "subtle", label: "Subtle" },
+                        { id: "box", label: "Box" },
+                      ] as const
+                    ).map((bg) => (
+                      <button
+                        key={bg.id}
+                        type="button"
+                        onClick={() =>
+                          onUpdateSubtitleSettings({ background: bg.id })
+                        }
+                        className={`rounded-md py-1 font-medium transition-colors ${
+                          subtitleSettings.background === bg.id
+                            ? "bg-zinc-800 text-white"
+                            : "text-zinc-500 hover:text-zinc-300"
+                        }`}
+                      >
+                        {bg.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Text Color */}
+                <div className="space-y-1.5">
+                  <span className="block text-[11px] font-medium text-zinc-400">
+                    Color
+                  </span>
+                  <div className="grid grid-cols-2 gap-1 rounded-lg border border-hairline bg-obsidian p-0.5">
+                    {(
+                      [
+                        { id: "white", label: "White" },
+                        { id: "yellow", label: "Yellow" },
+                      ] as const
+                    ).map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => onUpdateSubtitleSettings({ color: c.id })}
+                        className={`rounded-md py-1 font-medium transition-colors ${
+                          subtitleSettings.color === c.id
+                            ? "bg-zinc-800 text-white"
+                            : "text-zinc-500 hover:text-zinc-300"
+                        }`}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Vertical Position */}
+                <div className="space-y-1.5">
+                  <span className="block text-[11px] font-medium text-zinc-400">
+                    Position
+                  </span>
+                  <div className="grid grid-cols-3 gap-1 rounded-lg border border-hairline bg-obsidian p-0.5">
+                    {(
+                      [
+                        { id: "low", label: "Low" },
+                        { id: "standard", label: "Standard" },
+                        { id: "high", label: "High" },
+                      ] as const
+                    ).map((pos) => (
+                      <button
+                        key={pos.id}
+                        type="button"
+                        onClick={() =>
+                          onUpdateSubtitleSettings({ position: pos.id })
+                        }
+                        className={`rounded-md py-1 font-medium transition-colors ${
+                          subtitleSettings.position === pos.id
+                            ? "bg-zinc-800 text-white"
+                            : "text-zinc-500 hover:text-zinc-300"
+                        }`}
+                      >
+                        {pos.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Timing Sync Offset */}
+                <div className="flex items-center justify-between border-t border-hairline pt-3">
+                  <span className="text-[11px] font-medium text-zinc-400">
+                    Timing Sync
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setTimeOffset((o) => Number((o - 0.5).toFixed(1)))
+                      }
+                      className="rounded border border-hairline bg-obsidian p-1 text-zinc-400 hover:text-white"
+                      title="Delay by 0.5s"
+                    >
+                      <Minus className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimeOffset(0)}
+                      className="min-w-[3.2rem] rounded border border-hairline bg-obsidian px-1.5 py-0.5 font-mono text-[11px] text-zinc-300 hover:text-white"
+                      title="Reset timing"
+                    >
+                      {timeOffset >= 0
+                        ? `+${timeOffset.toFixed(1)}s`
+                        : `${timeOffset.toFixed(1)}s`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setTimeOffset((o) => Number((o + 0.5).toFixed(1)))
+                      }
+                      className="rounded border border-hairline bg-obsidian p-1 text-zinc-400 hover:text-white"
+                      title="Advance by 0.5s"
+                    >
+                      <Plus className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Live Subtitle Status & Timing Sync Strip (only when Arabic CC is active) */}
+      {/* Quiet Subtitle Status Strip (only when Arabic CC is loading/missing/waiting) */}
       {captionMode === "ar" && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline/60 bg-obsidian/30 px-4 py-2 text-[11px] text-zinc-400 sm:px-5">
+        <div className="flex items-center justify-between border-t border-hairline/60 bg-obsidian/30 px-4 py-1.5 text-[11px] text-zinc-500 sm:px-5">
           <span>
-            {subStatus === "loading" && "Loading Arabic subtitle track…"}
+            {subStatus === "loading" && "Loading Arabic subtitles…"}
             {subStatus === "ready" &&
-              `${customSubName ? customSubName : "Arabic subtitles"} ready (${
-                cues.length
-              } lines)${
-                isSyncedWithPlayer
-                  ? " · Synced to player"
-                  : " · Press play in the video to start sync"
-              }`}
+              (isSyncedWithPlayer
+                ? `Arabic subtitles active (${cues.length} lines)`
+                : `Arabic subtitles ready (${cues.length} lines) · Press play to sync`)}
             {subStatus === "missing" &&
-              `No Arabic track found online for Episode ${episode.number}. Click "Load .srt" to drop your own file.`}
+              `No Arabic subtitle track available for Episode ${episode.number}.`}
           </span>
-
-          {subStatus === "ready" && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-zinc-500">Sync:</span>
-              <button
-                type="button"
-                onClick={() => setTimeOffset((o) => Number((o - 0.5).toFixed(1)))}
-                className="rounded border border-hairline bg-surface p-1 text-zinc-400 hover:text-white"
-                title="Delay subtitles by 0.5s"
-              >
-                <Minus className="h-3 w-3" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setTimeOffset(0)}
-                className="min-w-[3rem] rounded border border-hairline bg-surface px-1.5 py-0.5 font-mono text-[11px] text-zinc-300 hover:text-white"
-                title="Reset sync offset"
-              >
-                {timeOffset >= 0 ? `+${timeOffset.toFixed(1)}s` : `${timeOffset.toFixed(1)}s`}
-              </button>
-              <button
-                type="button"
-                onClick={() => setTimeOffset((o) => Number((o + 0.5).toFixed(1)))}
-                className="rounded border border-hairline bg-surface p-1 text-zinc-400 hover:text-white"
-                title="Advance subtitles by 0.5s"
-              >
-                <Plus className="h-3 w-3" />
-              </button>
-            </div>
+          {timeOffset !== 0 && (
+            <span className="font-mono text-zinc-400">
+              Offset: {timeOffset > 0 ? `+${timeOffset}s` : `${timeOffset}s`}
+            </span>
           )}
         </div>
       )}

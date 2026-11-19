@@ -31,6 +31,18 @@ export type ServerId = "animeembed-ani" | "animeembed-mal" | "animeembed-dub";
 
 export type CaptionMode = "en" | "ar" | "off";
 
+export type SubtitleSize = "sm" | "md" | "lg" | "xl";
+export type SubtitleBackground = "none" | "subtle" | "box";
+export type SubtitleColor = "white" | "yellow";
+export type SubtitlePosition = "low" | "standard" | "high";
+
+export interface SubtitleSettings {
+  size: SubtitleSize;
+  background: SubtitleBackground;
+  color: SubtitleColor;
+  position: SubtitlePosition;
+}
+
 export interface SubtitleCue {
   start: number;
   end: number;
@@ -56,6 +68,7 @@ export interface UserWatchState {
   favoriteEpisodes: number[];
   preferredServer: ServerId;
   captionMode: CaptionMode;
+  subtitleSettings: SubtitleSettings;
 }
 
 export interface EpisodeCachePayload {

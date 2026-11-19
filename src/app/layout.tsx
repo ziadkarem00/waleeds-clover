@@ -1,11 +1,18 @@
 import type { Metadata, Viewport } from "next";
-import { Inter } from "next/font/google";
+import { Cairo, Inter } from "next/font/google";
 import "./globals.css";
 
 const inter = Inter({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
   variable: "--font-inter",
+  display: "swap",
+});
+
+const cairo = Cairo({
+  subsets: ["arabic"],
+  weight: ["600", "700"],
+  variable: "--font-subtitle-ar",
   display: "swap",
 });
 
@@ -26,7 +33,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`dark ${inter.variable}`}>
+    <html lang="en" className={`dark ${inter.variable} ${cairo.variable}`}>
       <body className="min-h-screen bg-obsidian font-sans text-zinc-100 antialiased selection:bg-crimson/30 selection:text-white">
         {children}
       </body>

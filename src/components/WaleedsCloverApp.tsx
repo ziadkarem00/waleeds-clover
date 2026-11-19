@@ -19,6 +19,7 @@ import type {
   Episode,
   ServerId,
   StoryArcId,
+  SubtitleSettings,
   UserWatchState,
 } from "@/types/anime";
 
@@ -209,6 +210,19 @@ export function WaleedsCloverApp() {
     }));
   }, []);
 
+  const handleUpdateSubtitleSettings = useCallback(
+    (patch: Partial<SubtitleSettings>) => {
+      setWatchState((prev) => ({
+        ...prev,
+        subtitleSettings: {
+          ...prev.subtitleSettings,
+          ...patch,
+        },
+      }));
+    },
+    []
+  );
+
   const handleEnterFromGreeting = useCallback(
     (resumeEp?: number) => {
       setShowGreeting(false);
@@ -278,6 +292,8 @@ export function WaleedsCloverApp() {
               onSelectServer={handleSelectServer}
               captionMode={watchState.captionMode}
               onSelectCaptionMode={handleSelectCaptionMode}
+              subtitleSettings={watchState.subtitleSettings}
+              onUpdateSubtitleSettings={handleUpdateSubtitleSettings}
               isWatched={watchedSet.has(activeEpisode.number)}
               isFavorite={favoriteSet.has(activeEpisode.number)}
               onToggleWatched={handleToggleWatched}

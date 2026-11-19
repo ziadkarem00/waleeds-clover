@@ -1,7 +1,23 @@
 import { clampEpisodeNumber } from "@/lib/arcs";
-import type { CaptionMode, ServerId, UserWatchState } from "@/types/anime";
+import type {
+  CaptionMode,
+  ServerId,
+  SubtitleBackground,
+  SubtitleColor,
+  SubtitlePosition,
+  SubtitleSettings,
+  SubtitleSize,
+  UserWatchState,
+} from "@/types/anime";
 
 const STORAGE_KEY = "waleeds_clover_watch_state_v3";
+
+export const DEFAULT_SUBTITLE_SETTINGS: SubtitleSettings = {
+  size: "md",
+  background: "none",
+  color: "white",
+  position: "standard",
+};
 
 export const DEFAULT_WATCH_STATE: UserWatchState = {
   lastWatched: null,
@@ -9,6 +25,7 @@ export const DEFAULT_WATCH_STATE: UserWatchState = {
   favoriteEpisodes: [],
   preferredServer: "animeembed-ani",
   captionMode: "ar",
+  subtitleSettings: DEFAULT_SUBTITLE_SETTINGS,
 };
 
 const VALID_SERVERS: ServerId[] = [
@@ -16,8 +33,11 @@ const VALID_SERVERS: ServerId[] = [
   "animeembed-mal",
   "animeembed-dub",
 ];
-
 const VALID_CAPTIONS: CaptionMode[] = ["en", "ar", "off"];
+const VALID_SIZES: SubtitleSize[] = ["sm", "md", "lg", "xl"];
+const VALID_BGS: SubtitleBackground[] = ["none", "subtle", "box"];
+const VALID_COLORS: SubtitleColor[] = ["white", "yellow"];
+const VALID_POSITIONS: SubtitlePosition[] = ["low", "standard", "high"];
 
 export function loadWatchState(): UserWatchState {
   if (typeof window === "undefined") return DEFAULT_WATCH_STATE;
@@ -73,12 +93,33 @@ export function loadWatchState(): UserWatchState {
         ? parsed.captionMode
         : "ar";
 
+    const rawSub = parsed.subtitleSettings;
+    const subtitleSettings: SubtitleSettings = {
+      size:
+        rawSub?.size && VALID_SIZES.includes(rawSub.size)
+          ? rawSub.size
+          : DEFAULT_SUBTITLE_SETTINGS.size,
+      background:
+        rawSub?.background && VALID_BGS.includes(rawSub.background)
+          ? rawSub.background
+          : DEFAULT_SUBTITLE_SETTINGS.background,
+      color:
+        rawSub?.color && VALID_COLORS.includes(rawSub.color)
+          ? rawSub.color
+          : DEFAULT_SUBTITLE_SETTINGS.color,
+      position:
+        rawSub?.position && VALID_POSITIONS.includes(rawSub.position)
+          ? rawSub.position
+          : DEFAULT_SUBTITLE_SETTINGS.position,
+    };
+
     return {
       lastWatched,
       watchedEpisodes,
       favoriteEpisodes,
       preferredServer,
       captionMode,
+      subtitleSettings,
     };
   } catch {
     return DEFAULT_WATCH_STATE;
