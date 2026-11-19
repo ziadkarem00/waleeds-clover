@@ -28,34 +28,27 @@ function parseTimestamp(raw: string): number {
  * question marks, exclamation marks, or ellipses were typed at the start
  * of a line for old LTR video players.
  */
-function normalizeArabicLine(line: string): string {
+export function normalizeArabicLine(line: string): string {
   let text = line.replace(BIDI_CONTROL_RE, "").replace(/\s+/g, " ").trim();
   if (!text || !ARABIC_CHAR_RE.test(text)) return text;
 
-  // Normalize ASCII ? and , inside Arabic sentences to proper Arabic marks
   text = text.replace(/\?/g, "؟").replace(/,(?=\s|$)/g, "،");
 
-  // Preserve leading dialogue speaker dash (e.g. "- مرحباً")
   let hasDialogueDash = false;
   if (/^[-–—]\s*/.test(text)) {
     hasDialogueDash = true;
     text = text.replace(/^[-–—]\s*/, "").trim();
   } else if (/\s+[-–—]$/.test(text)) {
-    // Visual-order trailing dash -> logical start dash
     hasDialogueDash = true;
     text = text.replace(/\s+[-–—]$/, "").trim();
   }
 
-  // Move misplaced leading sentence-ending punctuation (".مرحباً", "!أستا", "...ماذا")
-  // to the logical end of the Arabic line when it isn't already punctuated at the end.
   const leadingPunctMatch = text.match(/^([.!؟،,:;…]+)\s*(.+)$/);
   if (leadingPunctMatch) {
     const [, rawLeading, body] = leadingPunctMatch;
     if (body && ARABIC_CHAR_RE.test(body)) {
-      // Keep ellipsis if the body already ends with ellipsis (e.g. "...word...")
       const endsWithPunct = /[.!؟،,:;…]$/.test(body);
       if (!endsWithPunct) {
-        // Reverse multi-char punctuation order if needed (e.g. "؟!" -> "!؟")
         const fixedEnd =
           rawLeading === "..." || rawLeading === "…"
             ? "..."
@@ -65,26 +58,28 @@ function normalizeArabicLine(line: string): string {
     }
   }
 
-  // Clean stray spaces before punctuation (e.g. "أستا !" -> "أستا!")
   text = text.replace(/\s+([.!؟،,:;…])/g, "$1");
 
   return hasDialogueDash ? `- ${text}` : text;
 }
 
-function cleanCueText(raw: string): string {
-  const stripped = raw
-    .replace(/<[^>]+>/g, "") // strip HTML tags like <i>, <font>
-    .replace(/\{\\[^}]+\}/g, "") // strip ASS/SSA override tags
-    .replace(/\r/g, "")
-    .trim();
-
-  if (!stripped) return "";
-
-  return stripped
+export function normalizeArabicCueText(raw: string): string {
+  return raw
     .split("\n")
     .map((line) => normalizeArabicLine(line))
     .filter(Boolean)
     .join("\n");
+}
+
+function cleanCueText(raw: string): string {
+  const stripped = raw
+    .replace(/<[^>]+>/g, "")
+    .replace(/\{\\[^}]+\}/g, "")
+    .replace(/\r/g, "")
+    .trim();
+
+  if (!stripped) return "";
+  return normalizeArabicCueText(stripped);
 }
 
 export function parseSrtOrVtt(content: string): SubtitleCue[] {

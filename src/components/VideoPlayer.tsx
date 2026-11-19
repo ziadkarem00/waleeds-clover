@@ -147,11 +147,8 @@ export function VideoPlayer({
 }: VideoPlayerProps) {
   const [iframeLoading, setIframeLoading] = useState(true);
   const [cues, setCues] = useState<SubtitleCue[]>([]);
-  const [subStatus, setSubStatus] = useState<
-    "idle" | "loading" | "ready" | "missing"
-  >("idle");
+  const [subLoading, setSubLoading] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [isSyncedWithPlayer, setIsSyncedWithPlayer] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [timeOffset, setTimeOffset] = useState(0);
   const [showSubSettings, setShowSubSettings] = useState(false);
@@ -170,12 +167,10 @@ export function VideoPlayer({
   useEffect(() => {
     setIframeLoading(true);
     setCurrentTime(0);
-    setIsSyncedWithPlayer(false);
     setIsPlaying(false);
     setTimeOffset(0);
   }, [episode.number, activeServer]);
 
-  // Track fullscreen changes so Arabic subtitles remain visible in fullscreen
   useEffect(() => {
     const onFsChange = () => {
       setIsFullscreen(Boolean(document.fullscreenElement));
@@ -184,7 +179,6 @@ export function VideoPlayer({
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
 
-  // Close subtitle settings popover on outside click
   useEffect(() => {
     if (!showSubSettings) return;
     const handleClickOutside = (event: MouseEvent) => {
@@ -199,7 +193,6 @@ export function VideoPlayer({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showSubSettings]);
 
-  // Listen for AnimeEmbed PostMessage progress / play / pause events
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (!event.origin.includes("animeembed.com")) return;
@@ -212,7 +205,6 @@ export function VideoPlayer({
       const parsed = extractTimeFromMessage(event.data);
       if (typeof parsed.time === "number") {
         setCurrentTime(parsed.time);
-        setIsSyncedWithPlayer(true);
       }
       if (typeof parsed.playing === "boolean") {
         setIsPlaying(parsed.playing);
@@ -223,7 +215,6 @@ export function VideoPlayer({
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // Smooth local clock interpolation while playing
   useEffect(() => {
     if (!isPlaying) return;
     const interval = window.setInterval(() => {
@@ -232,16 +223,15 @@ export function VideoPlayer({
     return () => window.clearInterval(interval);
   }, [isPlaying]);
 
-  // Fetch Arabic subtitle cues when Arabic CC is active
   useEffect(() => {
     if (captionMode !== "ar") {
       setCues([]);
-      setSubStatus("idle");
+      setSubLoading(false);
       return;
     }
 
     let cancelled = false;
-    setSubStatus("loading");
+    setSubLoading(true);
     setCues([]);
 
     fetch(`/api/subtitles?episode=${episode.number}&lang=ar`)
@@ -250,16 +240,15 @@ export function VideoPlayer({
         if (cancelled) return;
         if (data.found && Array.isArray(data.cues) && data.cues.length > 0) {
           setCues(data.cues);
-          setSubStatus("ready");
         } else {
           setCues([]);
-          setSubStatus("missing");
         }
+        setSubLoading(false);
       })
       .catch(() => {
         if (!cancelled) {
           setCues([]);
-          setSubStatus("missing");
+          setSubLoading(false);
         }
       });
 
@@ -463,6 +452,10 @@ export function VideoPlayer({
             </button>
           )}
 
+          {captionMode === "ar" && subLoading && (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-500" />
+          )}
+
           {/* Subtitle Style & Sync Popover */}
           {showSubSettings && captionMode !== "off" && (
             <div className="absolute bottom-full left-0 z-30 mb-2 w-72 rounded-xl border border-hairline bg-surface p-4 shadow-2xl sm:left-auto sm:right-0">
@@ -470,13 +463,9 @@ export function VideoPlayer({
                 <span className="text-xs font-semibold text-zinc-200">
                   Subtitle Settings
                 </span>
-                {captionMode === "ar" && (
-                  <span className="text-[11px] text-zinc-500">
-                    {subStatus === "ready"
-                      ? `${cues.length} lines`
-                      : subStatus === "loading"
-                      ? "Loading…"
-                      : "Unavailable"}
+                {captionMode === "ar" && cues.length > 0 && (
+                  <span className="font-mono text-[11px] text-zinc-500">
+                    {cues.length} lines
                   </span>
                 )}
               </div>
@@ -571,7 +560,7 @@ export function VideoPlayer({
                   </div>
                 </div>
 
-                {/* Vertical Position (Arabic overlay) */}
+                {/* Vertical Position & Timing Sync (Arabic overlay) */}
                 {captionMode === "ar" && (
                   <>
                     <div className="space-y-1.5">
@@ -604,7 +593,6 @@ export function VideoPlayer({
                       </div>
                     </div>
 
-                    {/* Timing Sync Offset */}
                     <div className="flex items-center justify-between border-t border-hairline pt-3">
                       <span className="text-[11px] font-medium text-zinc-400">
                         Timing Sync
@@ -649,26 +637,6 @@ export function VideoPlayer({
           )}
         </div>
       </div>
-
-      {/* Quiet Subtitle Status Strip (only when Arabic CC is active) */}
-      {captionMode === "ar" && (
-        <div className="flex items-center justify-between border-t border-hairline/60 bg-obsidian/30 px-4 py-1.5 text-[11px] text-zinc-500 sm:px-5">
-          <span>
-            {subStatus === "loading" && "Loading Arabic subtitles…"}
-            {subStatus === "ready" &&
-              (isSyncedWithPlayer
-                ? `Arabic subtitles active (${cues.length} lines)`
-                : `Arabic subtitles ready (${cues.length} lines) · Press play to sync`)}
-            {subStatus === "missing" &&
-              `No Arabic subtitle track available for Episode ${episode.number}.`}
-          </span>
-          {timeOffset !== 0 && (
-            <span className="font-mono text-zinc-400">
-              Offset: {timeOffset > 0 ? `+${timeOffset}s` : `${timeOffset}s`}
-            </span>
-          )}
-        </div>
-      )}
 
       {/* Unified Controls Row 2: Episode Navigation & Watch Actions */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 border-t border-hairline px-4 py-3 sm:px-5">
