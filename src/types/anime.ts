@@ -53,7 +53,13 @@ export interface EmbedServer {
   id: ServerId;
   name: string;
   shortLabel: string;
-  buildUrl: (episodeNumber: number) => string;
+  buildUrl: (
+    episodeNumber: number,
+    options?: {
+      captionMode: CaptionMode;
+      subtitleSettings: SubtitleSettings;
+    }
+  ) => string;
 }
 
 export interface LastWatchedRecord {

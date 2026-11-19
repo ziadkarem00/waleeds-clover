@@ -16,6 +16,33 @@ interface StremioSubtitlesResponse {
   subtitles?: StremioSubtitleItem[];
 }
 
+/**
+ * OpenSubtitles / IMDb indexes Black Clover (Ep 1-170) across 4 seasons
+ * (S1: 1-51, S2: 52-102, S3: 103-154, S4: 155-170), while some uploaders use
+ * absolute Season 1 numbering (1:58). We build candidate season:episode pairs
+ * to check both and ensure every episode 1-170 finds its Arabic track.
+ */
+function getSeasonEpisodeCandidates(
+  absoluteEp: number
+): Array<{ season: number; ep: number }> {
+  const candidates: Array<{ season: number; ep: number }> = [];
+
+  if (absoluteEp <= 51) {
+    candidates.push({ season: 1, ep: absoluteEp });
+  } else if (absoluteEp <= 102) {
+    candidates.push({ season: 2, ep: absoluteEp - 51 });
+    candidates.push({ season: 1, ep: absoluteEp });
+  } else if (absoluteEp <= 154) {
+    candidates.push({ season: 3, ep: absoluteEp - 102 });
+    candidates.push({ season: 1, ep: absoluteEp });
+  } else {
+    candidates.push({ season: 4, ep: absoluteEp - 154 });
+    candidates.push({ season: 1, ep: absoluteEp });
+  }
+
+  return candidates;
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const rawEpisode = Number(searchParams.get("episode") ?? "1");
@@ -25,80 +52,71 @@ export async function GET(request: NextRequest) {
   const targetCodes =
     lang === "ar" ? new Set(["ara", "ar", "arb"]) : new Set(["eng", "en"]);
 
+  const seasonPairs = getSeasonEpisodeCandidates(episode);
+
   try {
-    const catalogUrl = `https://opensubtitles-v3.strem.io/subtitles/series/${BLACK_CLOVER_IMDB_ID}:1:${episode}.json`;
-    const catalogRes = await fetch(catalogUrl, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "WaleedsClover/3.0",
-      },
-      next: { revalidate: 86400 },
-    });
-
-    if (!catalogRes.ok) {
-      return NextResponse.json({
-        found: false,
-        cues: [],
-        message: "Subtitle catalog unavailable for this episode.",
+    for (const pair of seasonPairs) {
+      const catalogUrl = `https://opensubtitles-v3.strem.io/subtitles/series/${BLACK_CLOVER_IMDB_ID}:${pair.season}:${pair.ep}.json`;
+      const catalogRes = await fetch(catalogUrl, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "WaleedsClover/4.0",
+        },
+        next: { revalidate: 86400 },
       });
-    }
 
-    const catalog = (await catalogRes.json()) as StremioSubtitlesResponse;
-    const candidates = (catalog.subtitles ?? []).filter(
-      (item) =>
-        typeof item.url === "string" &&
-        typeof item.lang === "string" &&
-        targetCodes.has(item.lang.toLowerCase())
-    );
+      if (!catalogRes.ok) continue;
 
-    if (candidates.length === 0) {
-      return NextResponse.json({
-        found: false,
-        cues: [],
-        message: `No ${lang === "ar" ? "Arabic" : "English"} track found on OpenSubtitles for Ep ${episode}.`,
-      });
-    }
+      const catalog = (await catalogRes.json()) as StremioSubtitlesResponse;
+      const candidates = (catalog.subtitles ?? []).filter(
+        (item) =>
+          typeof item.url === "string" &&
+          typeof item.lang === "string" &&
+          targetCodes.has(item.lang.toLowerCase())
+      );
 
-    // Try up to 3 candidate subtitle files in case one mirror fails
-    for (const candidate of candidates.slice(0, 3)) {
-      if (!candidate.url) continue;
-      try {
-        const subRes = await fetch(candidate.url, {
-          headers: { "User-Agent": "WaleedsClover/3.0" },
-          next: { revalidate: 86400 },
-        });
-        if (!subRes.ok) continue;
+      for (const candidate of candidates.slice(0, 4)) {
+        if (!candidate.url) continue;
+        try {
+          const subRes = await fetch(candidate.url, {
+            headers: { "User-Agent": "WaleedsClover/4.0" },
+            next: { revalidate: 86400 },
+          });
+          if (!subRes.ok) continue;
 
-        const buffer = await subRes.arrayBuffer();
-        const decoded = decodeSubtitleBuffer(buffer);
-        const cues = parseSrtOrVtt(decoded);
+          const buffer = await subRes.arrayBuffer();
+          const decoded = decodeSubtitleBuffer(buffer);
+          const cues = parseSrtOrVtt(decoded);
 
-        if (cues.length > 0) {
-          return NextResponse.json(
-            {
-              found: true,
-              lang,
-              episode,
-              count: cues.length,
-              cues,
-            },
-            {
-              headers: {
-                "Cache-Control":
-                  "public, s-maxage=86400, stale-while-revalidate=604800",
+          if (cues.length > 0) {
+            return NextResponse.json(
+              {
+                found: true,
+                lang,
+                episode,
+                matchedSeason: pair.season,
+                matchedEpisode: pair.ep,
+                count: cues.length,
+                cues,
               },
-            }
-          );
+              {
+                headers: {
+                  "Cache-Control":
+                    "public, s-maxage=86400, stale-while-revalidate=604800",
+                },
+              }
+            );
+          }
+        } catch {
+          continue;
         }
-      } catch {
-        continue;
       }
     }
 
     return NextResponse.json({
       found: false,
       cues: [],
-      message: "Could not parse subtitle track for this episode.",
+      message: `No ${lang === "ar" ? "Arabic" : "English"} subtitle track found for Episode ${episode}.`,
     });
   } catch {
     return NextResponse.json({

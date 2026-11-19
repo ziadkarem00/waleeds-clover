@@ -60,23 +60,23 @@ export function FiveLeafLogo({ onClick }: FiveLeafLogoProps) {
     <button
       type="button"
       onClick={onClick}
-      className="group flex items-center gap-3 text-left focus:outline-none"
+      className="group flex min-w-0 items-center gap-2.5 text-left focus:outline-none sm:gap-3"
       aria-label="Waleed's Clover Home"
     >
-      <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-hairline bg-surface transition-colors group-hover:border-zinc-700">
-        <FiveLeafEmblem className="h-6 w-6" />
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-hairline bg-surface transition-colors group-hover:border-zinc-700 sm:h-9 sm:w-9">
+        <FiveLeafEmblem className="h-5 w-5 sm:h-6 sm:w-6" />
       </div>
 
-      <div className="flex flex-col">
+      <div className="min-w-0 flex flex-col">
         <div className="flex items-center gap-2.5">
-          <span className="text-sm font-semibold tracking-[0.14em] text-zinc-100 sm:text-[15px]">
+          <span className="truncate text-xs font-semibold tracking-[0.12em] text-zinc-100 sm:text-[15px] sm:tracking-[0.14em]">
             WALEED&apos;S CLOVER
           </span>
           <span className="hidden border-l border-hairline pl-2.5 text-[11px] font-medium text-zinc-500 sm:inline">
             Dedicated to Walid
           </span>
         </div>
-        <span className="text-[11px] text-zinc-500">
+        <span className="truncate text-[10px] text-zinc-500 sm:text-[11px]">
           Black Clover · Season 1 (1–170)
         </span>
       </div>
