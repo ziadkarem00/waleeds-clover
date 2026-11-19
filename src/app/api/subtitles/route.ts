@@ -13,6 +13,8 @@ const BLACK_CLOVER_IMDB_ID = "tt7441658";
 const ARABIC_CODES = new Set(["ara", "ar", "arb"]);
 const ENGLISH_CODES = new Set(["eng", "en"]);
 const SEPARATOR = "\n[[[SEP]]]\n";
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 interface StremioSubtitleItem {
   id?: string;
@@ -48,17 +50,188 @@ function getSeasonEpisodeCandidates(
 async function fetchSubtitleFile(url: string): Promise<SubtitleCue[] | null> {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "WaleedsClover/5.0" },
+      headers: { "User-Agent": BROWSER_UA },
       next: { revalidate: 604800 },
     });
     if (!res.ok) return null;
     const buffer = await res.arrayBuffer();
+    if (buffer.byteLength < 32) return null;
     const decoded = decodeSubtitleBuffer(buffer);
     const cues = parseSrtOrVtt(decoded);
     return cues.length > 0 ? cues : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Checks whether a SubtitleCat filename/href accurately matches Black Clover + exact episode number
+ * without false-matching (e.g. ep 9 won't match ep 19 or ep 99).
+ */
+function matchesBlackCloverEpisode(rawHref: string, ep: number): boolean {
+  let decoded = rawHref;
+  try {
+    decoded = decodeURIComponent(rawHref);
+  } catch {
+    // keep raw
+  }
+  const lower = decoded.toLowerCase();
+  if (!lower.includes("black") || !lower.includes("clover")) return false;
+
+  const padded2 = String(ep).padStart(2, "0");
+  const padded3 = String(ep).padStart(3, "0");
+  const exactPatterns = [
+    new RegExp(`(?:^|[^0-9])(?:ep?\\s*|s0?1e|[-_\\s])0*${ep}(?:[^0-9]|$)`, "i"),
+    new RegExp(`\\b${padded3}\\b`),
+    new RegExp(`\\b${padded2}\\b`),
+  ];
+
+  // Exclude obvious multi-digit collisions like 19 when ep=9
+  return exactPatterns.some((re) => re.test(lower));
+}
+
+function resolveSubtitleCatUrl(href: string): string {
+  if (href.startsWith("http://") || href.startsWith("https://")) return href;
+  const clean = href.startsWith("/") ? href : `/${href}`;
+  return `https://www.subtitlecat.com${clean}`;
+}
+
+/**
+ * Provider 1: SubtitleCat (covers all 170 episodes of Black Clover with clean Crunchyroll/enUS SRTs
+ * plus pre-translated Arabic SRTs when available).
+ */
+async function fetchFromSubtitleCat(
+  episode: number
+): Promise<{ arUrl?: string; enUrl?: string }> {
+  const padded2 = String(episode).padStart(2, "0");
+  const queries = [
+    `Black Clover - ${padded2}`,
+    `Black Clover - ${episode}`,
+    `Black Clover S01E${padded2}`,
+  ];
+
+  const seenPages = new Set<string>();
+  const detailPages: string[] = [];
+
+  for (const query of queries) {
+    if (detailPages.length >= 3) break;
+    try {
+      const searchUrl = `https://www.subtitlecat.com/index.php?search=${encodeURIComponent(
+        query
+      )}`;
+      const res = await fetch(searchUrl, {
+        headers: {
+          "User-Agent": BROWSER_UA,
+          Accept: "text/html,application/xhtml+xml",
+        },
+        next: { revalidate: 604800 },
+      });
+      if (!res.ok) continue;
+
+      const html = await res.text();
+      const linkRe = /href="([^"]*subs\/\d+\/[^"]+\.html)"/gi;
+      let match: RegExpExecArray | null;
+      while ((match = linkRe.exec(html)) !== null) {
+        const href = match[1];
+        if (!href || seenPages.has(href)) continue;
+        if (matchesBlackCloverEpisode(href, episode)) {
+          seenPages.add(href);
+          detailPages.push(resolveSubtitleCatUrl(href));
+          if (detailPages.length >= 3) break;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  let arUrl: string | undefined;
+  let enUrl: string | undefined;
+
+  for (const pageUrl of detailPages) {
+    try {
+      const res = await fetch(pageUrl, {
+        headers: {
+          "User-Agent": BROWSER_UA,
+          Accept: "text/html,application/xhtml+xml",
+        },
+        next: { revalidate: 604800 },
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+
+      if (!arUrl) {
+        const arMatch =
+          html.match(/id="download_ar"[^>]*href="([^"]+\.srt)"/i) ??
+          html.match(/href="([^"]+\.srt)"[^>]*id="download_ar"/i);
+        if (arMatch?.[1]) arUrl = resolveSubtitleCatUrl(arMatch[1]);
+      }
+
+      if (!enUrl) {
+        const enMatch =
+          html.match(/id="download_en"[^>]*href="([^"]+\.srt)"/i) ??
+          html.match(/href="([^"]+\.srt)"[^>]*id="download_en"/i) ??
+          html.match(/href="([^"]*subs\/\d+\/[^"]+\.srt)"/i);
+        if (enMatch?.[1]) enUrl = resolveSubtitleCatUrl(enMatch[1]);
+      }
+
+      if (arUrl && enUrl) break;
+    } catch {
+      continue;
+    }
+  }
+
+  return { arUrl, enUrl };
+}
+
+/**
+ * Provider 2: OpenSubtitles v3 (Stremio keyless endpoint across IMDb 4-season & S1 mappings).
+ */
+async function fetchFromOpenSubtitles(
+  episode: number
+): Promise<{ arUrls: string[]; enUrls: string[] }> {
+  const seasonPairs = getSeasonEpisodeCandidates(episode);
+
+  const catalogResults = await Promise.all(
+    seasonPairs.map(async (pair) => {
+      try {
+        const catalogUrl = `https://opensubtitles-v3.strem.io/subtitles/series/${BLACK_CLOVER_IMDB_ID}:${pair.season}:${pair.ep}.json`;
+        const res = await fetch(catalogUrl, {
+          headers: {
+            Accept: "application/json",
+            "User-Agent": "WaleedsClover/6.0",
+          },
+          next: { revalidate: 604800 },
+        });
+        if (!res.ok) return [] as StremioSubtitleItem[];
+        const json = (await res.json()) as StremioSubtitlesResponse;
+        return Array.isArray(json.subtitles) ? json.subtitles : [];
+      } catch {
+        return [] as StremioSubtitleItem[];
+      }
+    })
+  );
+
+  const allItems = catalogResults.flat();
+  const arUrls = allItems
+    .filter(
+      (item): item is Required<Pick<StremioSubtitleItem, "url" | "lang">> =>
+        typeof item.url === "string" &&
+        typeof item.lang === "string" &&
+        ARABIC_CODES.has(item.lang.toLowerCase())
+    )
+    .map((item) => item.url);
+
+  const enUrls = allItems
+    .filter(
+      (item): item is Required<Pick<StremioSubtitleItem, "url" | "lang">> =>
+        typeof item.url === "string" &&
+        typeof item.lang === "string" &&
+        ENGLISH_CODES.has(item.lang.toLowerCase())
+    )
+    .map((item) => item.url);
+
+  return { arUrls, enUrls };
 }
 
 async function translateBatchToArabic(texts: string[]): Promise<string[]> {
@@ -70,7 +243,7 @@ async function translateBatchToArabic(texts: string[]): Promise<string[]> {
       joined
     )}`;
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
+      headers: { "User-Agent": BROWSER_UA },
       next: { revalidate: 604800 },
     });
 
@@ -88,7 +261,6 @@ async function translateBatchToArabic(texts: string[]): Promise<string[]> {
       );
     }
 
-    // Fallback: line-by-line split if separator count drifted
     const lineSplit = fullTranslated.split(/\n+/).filter(Boolean);
     if (lineSplit.length === texts.length) {
       return lineSplit.map((p) => normalizeArabicCueText(p.trim()));
@@ -101,14 +273,16 @@ async function translateBatchToArabic(texts: string[]): Promise<string[]> {
 }
 
 async function translateCuesToArabic(cues: SubtitleCue[]): Promise<SubtitleCue[]> {
-  // Chunk into batches under ~1,800 chars so Google Translate URLs stay fast and well within limits
   const batches: SubtitleCue[][] = [];
   let currentBatch: SubtitleCue[] = [];
   let currentChars = 0;
 
   for (const cue of cues) {
     const len = cue.text.length + SEPARATOR.length;
-    if (currentBatch.length > 0 && (currentChars + len > 1600 || currentBatch.length >= 25)) {
+    if (
+      currentBatch.length > 0 &&
+      (currentChars + len > 1600 || currentBatch.length >= 25)
+    ) {
       batches.push(currentBatch);
       currentBatch = [];
       currentChars = 0;
@@ -120,7 +294,6 @@ async function translateCuesToArabic(cues: SubtitleCue[]): Promise<SubtitleCue[]
     batches.push(currentBatch);
   }
 
-  // Run batches in controlled parallel groups of 5 for fast response
   const translatedCues: SubtitleCue[] = [];
   for (let i = 0; i < batches.length; i += 5) {
     const group = batches.slice(i, i + 5);
@@ -150,77 +323,55 @@ export async function GET(request: NextRequest) {
   const lang = searchParams.get("lang") === "en" ? "en" : "ar";
   const episode = clampEpisodeNumber(rawEpisode);
 
-  const seasonPairs = getSeasonEpisodeCandidates(episode);
-
   try {
-    // Fetch OpenSubtitles v3 catalogs across candidate season:episode pairs in parallel
-    const catalogResults = await Promise.all(
-      seasonPairs.map(async (pair) => {
-        try {
-          const catalogUrl = `https://opensubtitles-v3.strem.io/subtitles/series/${BLACK_CLOVER_IMDB_ID}:${pair.season}:${pair.ep}.json`;
-          const res = await fetch(catalogUrl, {
-            headers: {
-              Accept: "application/json",
-              "User-Agent": "WaleedsClover/5.0",
-            },
-            next: { revalidate: 604800 },
-          });
-          if (!res.ok) return [] as StremioSubtitleItem[];
-          const json = (await res.json()) as StremioSubtitlesResponse;
-          return Array.isArray(json.subtitles) ? json.subtitles : [];
-        } catch {
-          return [] as StremioSubtitleItem[];
-        }
-      })
-    );
+    // Query SubtitleCat and OpenSubtitles v3 in parallel for maximum speed & 1-170 coverage
+    const [subCat, openSubs] = await Promise.all([
+      fetchFromSubtitleCat(episode),
+      fetchFromOpenSubtitles(episode),
+    ]);
 
-    const allItems = catalogResults.flat();
+    const arabicUrlPool = [
+      ...(subCat.arUrl ? [subCat.arUrl] : []),
+      ...openSubs.arUrls.slice(0, 3),
+    ];
 
-    const arabicCandidates = allItems.filter(
-      (item) =>
-        typeof item.url === "string" &&
-        typeof item.lang === "string" &&
-        ARABIC_CODES.has(item.lang.toLowerCase())
-    );
+    const englishUrlPool = [
+      ...(subCat.enUrl ? [subCat.enUrl] : []),
+      ...openSubs.enUrls.slice(0, 3),
+    ];
 
-    const englishCandidates = allItems.filter(
-      (item) =>
-        typeof item.url === "string" &&
-        typeof item.lang === "string" &&
-        ENGLISH_CODES.has(item.lang.toLowerCase())
-    );
+    const cacheHeaders = {
+      "Cache-Control": "public, s-maxage=604800, stale-while-revalidate=2592000",
+    };
 
-    // 1. If English requested, return native English track
+    // English requested: try SubtitleCat & OpenSubtitles English tracks
     if (lang === "en") {
-      for (const item of englishCandidates.slice(0, 3)) {
-        if (!item.url) continue;
-        const cues = await fetchSubtitleFile(item.url);
+      for (const url of englishUrlPool) {
+        const cues = await fetchSubtitleFile(url);
         if (cues) {
           return NextResponse.json(
             { found: true, lang: "en", source: "native", episode, count: cues.length, cues },
-            { headers: { "Cache-Control": "public, s-maxage=604800, stale-while-revalidate=2592000" } }
+            { headers: cacheHeaders }
           );
         }
       }
       return NextResponse.json({ found: false, cues: [] });
     }
 
-    // 2. Tier 1 for Arabic: Native Arabic subtitle track
-    for (const item of arabicCandidates.slice(0, 4)) {
-      if (!item.url) continue;
-      const cues = await fetchSubtitleFile(item.url);
+    // Arabic requested — Tier 1: Native Arabic SRT from SubtitleCat or OpenSubtitles
+    for (const url of arabicUrlPool) {
+      const cues = await fetchSubtitleFile(url);
       if (cues) {
         return NextResponse.json(
           { found: true, lang: "ar", source: "native", episode, count: cues.length, cues },
-          { headers: { "Cache-Control": "public, s-maxage=604800, stale-while-revalidate=2592000" } }
+          { headers: cacheHeaders }
         );
       }
     }
 
-    // 3. Tier 2 for Arabic: Auto-translate native English track to Arabic (covers all 170 episodes!)
-    for (const item of englishCandidates.slice(0, 3)) {
-      if (!item.url) continue;
-      const englishCues = await fetchSubtitleFile(item.url);
+    // Arabic requested — Tier 2: Fetch English SRT (SubtitleCat or OpenSubtitles) & translate to Arabic
+    for (const url of englishUrlPool) {
+      const englishCues = await fetchSubtitleFile(url);
       if (englishCues) {
         const arabicCues = await translateCuesToArabic(englishCues);
         return NextResponse.json(
@@ -232,7 +383,7 @@ export async function GET(request: NextRequest) {
             count: arabicCues.length,
             cues: arabicCues,
           },
-          { headers: { "Cache-Control": "public, s-maxage=604800, stale-while-revalidate=2592000" } }
+          { headers: cacheHeaders }
         );
       }
     }
